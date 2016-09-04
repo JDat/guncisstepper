@@ -1,126 +1,178 @@
-#define numSteps 25000
-#define driveSpeed 1000
-#define accell 100>>1
+// User settable parameters
 
-#define magic 10
+//speed and acceleration while calibrating
+#define calibrateSpeed 3500     //practical maximum: 4000-5000. Can set 100000 if want, but it's useless
+#define calibrateAccel 15000    //can set more, but useless
+#define scanCalibrateTime 1000   //scanner button press time while calibrating 1000= 1 sec
 
-#define startPin 2
-#define stopPin 3
+//speed and acceleration while scaning
+#define scanSpeed 2500          //practical maximum: 4000-5000. Can set 100000 if want, but it's useless
+#define scanAccel 5000         //can set more, but useless
+#define magicSteps 15           //magic! compensate motor prblems by adding some steps to total move
+#define deltaScan 350            // delta in steps between sensor and scanner optics center. Positive only!!!
+
+//scanner sensor invert?
+#define scanActive LOW
+#define scanInactive HIGH
+
+// Pin definition
+//limit sensors
+#define homePin 2
+#define endPin 3
+//motor pins
 #define stepPin 4
 #define directionPin 12
-#define enablePin 11
-#define delaySignal 5
+#define enaPin 11
 
-volatile byte eStop;
+//other
+#define scanSolenoid 13
+#define scanButton 9
+#define scanSensor 8
+
+#include <AccelStepper.h>
+
+AccelStepper stepper(AccelStepper::DRIVER, stepPin, directionPin); // Defaults to AccelStepper::DRIVER
+
+long totalSteps=0;      //total steps betwenn limit switches
+
+//initialise I/O pins
+void initPins(){
+  pinMode(homePin,INPUT_PULLUP);
+  pinMode(endPin,INPUT_PULLUP);
+  pinMode(scanButton,INPUT_PULLUP);
+  pinMode(scanSensor,INPUT_PULLUP);
+  pinMode(scanSolenoid,OUTPUT);  
+}
+
+void initStepper(){
+  stepper.setEnablePin(enaPin);
+  stepper.setPinsInverted(true);
+  stepper.disableOutputs();  
+}
+
+//do this only one time while booting
 void setup() {
-  //Serial.begin(9600);
-  pinMode(startPin,INPUT_PULLUP);
-  pinMode(stopPin,INPUT_PULLUP);
-  pinMode(stepPin,OUTPUT);
-  pinMode(enablePin,OUTPUT);
-  pinMode(directionPin,OUTPUT);
-  attachInterrupt(digitalPinToInterrupt(startPin),emergencyBegin,FALLING);
-  attachInterrupt(digitalPinToInterrupt(stopPin),emergencyEnd,FALLING);
+  //Serial.begin(115200);     //debug
+  initPins();
+  initStepper();
+  
+  solenoidOff();
+  calibrate();
 }
+
+//repeat this forever
 void loop() {
-  digitalWrite(enablePin,HIGH);
-  long a=doAccell();
-  if (a>0) {
-    if (steps(numSteps-a*2,driveSpeed)==0){
-      if (a>0){
-        if (doDeccell(a)==0);  
-        {
-          changeDirection();
-        }
-      }    
-      else
-      {
-        changeDirection();
-      }
-    }
-    else
-    {
-      changeDirection();
-    }
+
+  //wait while scan button pressed
+  while(digitalRead(scanButton)){    
   }
-  else
-  {
-    changeDirection();
-  }
-  //changeDirection();
-  //doStep();
-  digitalWrite(enablePin,LOW);
-  delay(2000);
+  //do scanning
+  scan();
+
 }
 
-void changeDirection(){
-  digitalWrite(directionPin,!digitalRead(directionPin));
-}
-long doAccell(){
-  long Pt=0,Vt=0;
-  long Pt0=0,Vt0=0;
-  long a=accell;
-  while (Vt<driveSpeed){
-    Pt=Pt+Vt+a;
-    Vt=Vt+a;
-    if (steps((Pt-Pt0)/magic,Vt)){
-      return 0;
+void scan(){
+  long scanStart;
+  long scanStop;
+  byte scanState;
+  byte noReload;
+  
+  scanState=false;
+  noReload=false;
+  scanStop=totalSteps;
+  scanStart=scanStop;
+  stepper.setMaxSpeed(scanSpeed);
+  stepper.setAcceleration(scanAccel);
+  stepper.moveTo(totalSteps+magicSteps);
+  stepper.enableOutputs();
+  while((gotEnd()==false) && stepper.isRunning()){
+    if ((digitalRead(scanSensor)==scanActive) && (scanState==false) && (noReload==false)){
+      scanStart=stepper.currentPosition()+deltaScan;
+      scanState=true;
+      noReload=true;
     }
-    //steps(Pt-Pt0,Vt-Vt0);
-    Pt0=Pt;
-    Vt0=Vt;
-  }
-  return Pt;
-}
-long doDeccell(long points){
-  long Pt=points,Vt=driveSpeed;
-  long Pt0=0,Vt0=0;
-  long a=-accell;
-  while (Vt>0){
-    Pt=Pt+Vt+a;
-    Vt=Vt+a;
-    if (steps((Pt-Pt0)/magic,Vt)){
-      return 0;
+
+    if ((digitalRead(scanSensor)==scanInactive) &&(scanState==true)){
+      scanStop=stepper.currentPosition()+deltaScan;
+      scanState=false;
+    }    
+
+    if ((stepper.currentPosition()>=scanStart) && (stepper.currentPosition()<=scanStop) ){
+      solenoidOn();      
     }
-    //steps(Pt-Pt0,Vt-Vt0);
-    Pt0=Pt;
-    Vt0=Vt;
-  }
-  return Pt;
-}
-
-byte steps(long steps,long curSpeed) {
-  int currpps=1000000/curSpeed;
-  eStop=false;
-  for (long i=0;i<steps;i++){
-    if (eStop) {
-      changeDirection();
-      for (byte j=0;j>10;j++){
-        doStep();
-        delayMicroseconds(16000);
-      }
-      changeDirection();
-      return -1;
+    else {
+      solenoidOff();
     }
-    doStep();
-    delayMicroseconds(currpps);
+    if (stepper.currentPosition()>=scanStop){break;}
+    stepper.run();
   }
-  return 0;
+  solenoidOff();
+  stepper.stop();
+
+  stepper.setMaxSpeed(calibrateSpeed);
+  stepper.setAcceleration(calibrateAccel);
+
+  stepper.moveTo(0);
+  while((gotHome()==false) && stepper.isRunning()){
+    stepper.run();
+  }
+
+  stepper.stop();  
+  stepper.disableOutputs();
 }
 
-void doStep() {
-  digitalWrite(stepPin,HIGH);
-  delayMicroseconds(delaySignal);
-  digitalWrite(stepPin,LOW);
-  delayMicroseconds(delaySignal);
+//check for home limit sensor
+byte gotHome(){return digitalRead(homePin) ? false : true;}
+//check for end limit sensor
+byte gotEnd(){return digitalRead(endPin) ? false : true;}
+//scanner button (solenoid) control
+void solenoidOn(){digitalWrite(scanSolenoid,HIGH);}
+void solenoidOff(){digitalWrite(scanSolenoid,LOW);}
 
+//initial calibration move
+void calibrate(){
+  stepper.setMaxSpeed(calibrateSpeed);
+  stepper.setAcceleration(calibrateAccel);
+
+  stepper.moveTo(100000);      //move to end. Fake step number, must bee BIG
+  stepper.enableOutputs();
+  //moving loop with end limit checking
+  while(gotEnd()==0){
+    stepper.run();
+  }
+
+  //change direction by faking stepper motor
+  stepper.setPinsInverted(false);   //hack direction
+  stepper.setCurrentPosition(0);    //hack postion
+  stepper.moveTo(100000);     //move to home. Fake step number, must bee BIG
+
+  //moving loop with home limit cheking
+  while(gotHome()==0){
+    stepper.run();
+  }
+  
+  totalSteps=stepper.currentPosition();   //get steps from full trolley move
+  
+  initStepper();              //reinit stepper after hack
+  stepper.setCurrentPosition(0);    //set true zero postion
+  stepper.disableOutputs();         //diable motor
+
+  //tur on scanner for calibration read
+  solenoidOn();
+  delay(scanCalibrateTime);
+  solenoidOff();
+}
+/*
+void atHome(){
+  stepper.stop();
+  //stopReason=stopHome;  
+  //stepper.setCurrentPosition(0);
 }
 
-void emergencyBegin(){
-  eStop=true;
-}
+void atEnd(){
+  stepper.stop();
+  //stopReason=stopEnd;
+  //stepper.setCurrentPosition(8000);
 
-void emergencyEnd(){
-  eStop=true;
 }
-
+*/
