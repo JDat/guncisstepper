@@ -15,6 +15,7 @@
 #define scanPin A5
 
 #define buttonPin 11
+#define buttonHomePin 12
 
 #define in1 6
 #define in2 7
@@ -59,11 +60,20 @@ void loop() {
   if (scanButton()){
     scan();
   }
+  if (homeButton()){
+    moveLeftEnd();
+  }
+
 }
 
 uint8_t scanButton(){
   return !digitalRead(buttonPin);
 }
+
+uint8_t homeButton(){
+  return !digitalRead(buttonHomePin);
+}
+
 long scan(){
   long countSteps=0;
   long paperStartSteps=0;
@@ -71,6 +81,7 @@ long scan(){
   long centerSteps=0;
   long centerScannerSteps=0;
   
+  moveLeftEnd();
   centerSteps=totalSteps/2;
   //Serial.println(totalSteps);
   //Serial.println(centerSteps);
